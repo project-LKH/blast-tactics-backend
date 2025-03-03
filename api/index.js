@@ -3,9 +3,15 @@ const cors = require("cors")
 
 const app = express()
 app.use(cors())
+app.use(cors({ origin: "https://project-lkh.github.io" }));
+
+
 app.use(express.json())
 
 let games = {}
+app.get("/", (req, res) => {
+    res.json({ message: "API is working!" });
+});
 
 app.post("/create-game", (req, res) => {
     const gameId = Math.random().toString(36).substr(2, 6)
