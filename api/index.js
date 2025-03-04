@@ -48,6 +48,7 @@ app.get("/game-state/:gameId", (req, res) => {
         console.log(`Game ${req.params.gameId} has ${game.players.length} players`);
         res.json({ gameState: game });
     } else {
+        console.log(games)
         res.status(404).json({ error: "Game not found" });
     }
 });
