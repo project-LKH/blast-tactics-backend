@@ -121,15 +121,6 @@ app.post("/reset-game", (req, res) => {
     res.json({ message: "Game reset", gameState: games[gameId] });
 });
 
-// Cleanup old games
-setInterval(() => {
-    const now = Date.now();
-    for (const gameId in games) {
-        if (now - games[gameId].lastUpdated > 3600000) {
-            delete games[gameId];
-        }
-    }
-}, 60000);
 
 // Check for explosions
 function checkForExplosions(game, player) {
