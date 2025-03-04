@@ -2,9 +2,7 @@ const express = require("express");
 const cors = require("cors");
 
 const app = express();
-app.use(cors());
 app.use(cors({ origin: "https://project-lkh.github.io" }));
-
 app.use(express.json());
 
 let games = {};
@@ -15,7 +13,7 @@ app.get("/", (req, res) => {
 
 // Create a new game
 app.post("/create-game", (req, res) => {
-    const gameId = Math.random().toString(36).substr(2, 6);
+    const gameId = Math.random().toString(36).slice(2, 8);
     games[gameId] = {
         grid: Array(6).fill(null).map(() => Array(6).fill({ value: 0, owner: null })),
         players: [],
@@ -36,17 +34,18 @@ app.post("/join-game", (req, res) => {
     if (games[gameId].players.length >= 2) {
         return res.status(400).json({ error: "Game is full" });
     }
-    
+
     const playerId = games[gameId].players.length + 1;
     games[gameId].players.push(playerId);
-    
-    res.json({ playerId });
+
+    res.json({ playerId, gameState: games[gameId] });
 });
 
 // Get game state
 app.get("/game-state/:gameId", (req, res) => {
     const game = games[req.params.gameId];
     if (game) {
+        console.log(`Game ${req.params.gameId} has ${game.players.length} players`);
         res.json({ gameState: game });
     } else {
         res.status(404).json({ error: "Game not found" });
@@ -59,16 +58,12 @@ app.post("/move", (req, res) => {
     if (!games[gameId]) return res.status(404).json({ error: "Game not found" });
 
     const game = games[gameId];
-
-    // Ensure it's the player's turn
     if (game.currentPlayer !== player) {
         return res.status(400).json({ error: "Not your turn!" });
     }
 
-    // Clone the grid to avoid mutation
-    const newGrid = JSON.parse(JSON.stringify(game.grid));
+    const newGrid = structuredClone(game.grid);
 
-    // Ensure valid move
     if (newGrid[row][col].owner !== null && newGrid[row][col].owner !== player) {
         return res.status(400).json({ error: "Invalid move on opponent's cell" });
     }
@@ -76,10 +71,8 @@ app.post("/move", (req, res) => {
     newGrid[row][col].value++;
     newGrid[row][col].owner = player;
 
-    // Check for explosions
-    checkForExplosions(newGrid, player);
+    checkForExplosions(game, player);
 
-    // Check for win condition
     if (checkForWin(newGrid, player)) {
         game.gameOver = true;
         game.winner = player;
@@ -99,69 +92,101 @@ app.get("/wait-for-update/:gameId", async (req, res) => {
     if (!games[gameId]) return res.status(404).json({ error: "Game not found" });
 
     const lastCheck = Date.now();
-    while (Date.now() - lastCheck < 30000) { // 30 sec timeout
-        if (Date.now() - games[gameId].lastUpdated < 1000) { // Check if game updated
+    while (Date.now() - lastCheck < 30000) {
+        if (Date.now() - games[gameId].lastUpdated < 1000) {
             return res.json({ gameState: games[gameId] });
         }
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 sec
+        await new Promise(resolve => setTimeout(resolve, 500));
     }
-    res.status(204).end(); // No updates
+    res.status(204).end();
 });
 
+// Reset Game
+app.post("/reset-game", (req, res) => {
+    const { gameId } = req.body;
+    if (!games[gameId]) {
+        return res.status(404).json({ error: "Game not found" });
+    }
+
+    games[gameId] = {
+        grid: Array(6).fill(null).map(() => Array(6).fill({ value: 0, owner: null })),
+        players: games[gameId].players,
+        currentPlayer: 1,
+        gameOver: false,
+        winner: null,
+        lastUpdated: Date.now(),
+    };
+
+    res.json({ message: "Game reset", gameState: games[gameId] });
+});
+
+// Cleanup old games
+setInterval(() => {
+    const now = Date.now();
+    for (const gameId in games) {
+        if (now - games[gameId].lastUpdated > 3600000) {
+            delete games[gameId];
+        }
+    }
+}, 60000);
+
 // Check for explosions
-function checkForExplosions(grid, player) {
-    let changed = false;
-    do {
-        changed = false;
-        const newGrid = JSON.parse(JSON.stringify(grid));
+function checkForExplosions(game, player) {
+    const grid = game.grid;
+    let queue = [];
 
-        grid.forEach((row, rowIndex) => {
-            row.forEach((cell, colIndex) => {
-                const maxCapacity =
-                    (rowIndex === 0 || rowIndex === 5 ? 1 : 2) +
-                    (colIndex === 0 || colIndex === 5 ? 1 : 2);
+    // First, find all overfilled cells
+    for (let row = 0; row < 6; row++) {
+        for (let col = 0; col < 6; col++) {
+            if (shouldExplode(grid, row, col)) {
+                queue.push({ row, col });
+            }
+        }
+    }
 
-                if (cell.value >= maxCapacity) {
-                    newGrid[rowIndex][colIndex].value = 0;
-                    newGrid[rowIndex][colIndex].owner = null;
+    // Process the queue (BFS)
+    while (queue.length > 0) {
+        let { row, col } = queue.shift();
+        let cell = grid[row][col];
 
-                    const neighbors = [
-                        [rowIndex - 1, colIndex],
-                        [rowIndex + 1, colIndex],
-                        [rowIndex, colIndex - 1],
-                        [rowIndex, colIndex + 1],
-                    ];
+        // Reset the current cell
+        cell.value = 0;
+        cell.owner = null;
 
-                    neighbors.forEach(([r, c]) => {
-                        if (r >= 0 && r < 6 && c >= 0 && c < 6) {
-                            newGrid[r][c].value++;
-                            newGrid[r][c].owner = player;
-                        }
-                    });
+        // Distribute to neighbors
+        let neighbors = [
+            [row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]
+        ];
 
-                    changed = true;
+        for (let [r, c] of neighbors) {
+            if (r >= 0 && r < 6 && c >= 0 && c < 6) {
+                grid[r][c].value++;
+                grid[r][c].owner = player;
+
+                // If this cell now needs to explode, add it to the queue
+                if (shouldExplode(grid, r, c)) {
+                    queue.push({ row: r, col: c });
                 }
-            });
-        });
-
-        grid = JSON.parse(JSON.stringify(newGrid));
-    } while (changed);
+            }
+        }
+    }
 }
+
+// Helper function to check explosion threshold
+function shouldExplode(grid, row, col) {
+    let neighbors = 0;
+    if (row > 0) neighbors++; // Top
+    if (row < 5) neighbors++; // Bottom
+    if (col > 0) neighbors++; // Left
+    if (col < 5) neighbors++; // Right
+
+    return grid[row][col].value >= neighbors;
+}
+
 
 // Check for a win
 function checkForWin(grid, player) {
-    const opponent = player === 1 ? 2 : 1;
-    let opponentCells = 0;
-
-    grid.forEach(row => {
-        row.forEach(cell => {
-            if (cell.owner === opponent) {
-                opponentCells++;
-            }
-        });
-    });
-
-    return opponentCells === 0;
+    return grid.flat().every(cell => cell.owner !== (player === 1 ? 2 : 1));
 }
 
 module.exports = app;
